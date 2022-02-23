@@ -1,0 +1,15 @@
+artifact_uri: file:///Users/bnjmn.fchr/code/bnjmn-fchr/TaxiFareModel/mlruns/1/7c98139a27a444b99727d67b9e7e32f5/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '1'
+lifecycle_stage: active
+name: ''
+run_id: 7c98139a27a444b99727d67b9e7e32f5
+run_uuid: 7c98139a27a444b99727d67b9e7e32f5
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1645540782777
+status: 1
+tags: []
+user_id: unknown
