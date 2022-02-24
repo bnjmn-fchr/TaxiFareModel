@@ -1,100 +1,125 @@
-from sys import set_asyncgen_hooks
-from memoized_property import memoized_property
-from sklearn.linear_model import LinearRegression
-from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.pipeline import Pipeline
-from TaxiFareModel.encoders import TimeFeaturesEncoder, DistanceTransformer
-from TaxiFareModel.utils import compute_rmse
-from mlflow.tracking import MlflowClient
-import mlflow
+from google.cloud import storage
+import pandas as pd
+from sklearn import linear_model
+import numpy as np
+import joblib
 
-MLFLOW_URI = "https://mlflow.lewagon.co/"
-EXPERIMENT_NAME = "[FR] [Lyon] [bfoucher] TaxiFareModel v0.1"
+### GCP configuration - - - - - - - - - - - - - - - - - - -
 
-class Trainer():
-    def __init__(self, X_train, y_train):
-        """
-            X_train: pandas DataFrame
-            y_train: pandas Series
-        """
-        self.pipeline = None
-        self.X_train = X_train
-        self.y_train = y_train
+# /!\ you should fill these according to your account
 
-    def set_pipeline(self):
-        '''returns a pipelined model'''
-        dist_pipe = Pipeline([
-            ('dist_trans', DistanceTransformer()),
-            ('stdscaler', StandardScaler())
-        ])
+### GCP Project - - - - - - - - - - - - - - - - - - - - - -
 
-        time_pipe = Pipeline([
-            ('time_enc', TimeFeaturesEncoder('pickup_datetime')),
-            ('ohe', OneHotEncoder(handle_unknown='ignore'))
-        ])
+# not required here
 
-        preproc_pipe = ColumnTransformer([
-            ('distance', dist_pipe, ["pickup_latitude", "pickup_longitude", 'dropoff_latitude', 'dropoff_longitude']),
-            ('time', time_pipe, ['pickup_datetime'])
-        ], remainder="drop")
+### GCP Storage - - - - - - - - - - - - - - - - - - - - - -
 
-        self.pipeline = Pipeline([
-            ('preproc', preproc_pipe),
-            ('linear_model', LinearRegression())
-        ])
+BUCKET_NAME = 'taxifare-model-789'
 
-        return self
+##### Data  - - - - - - - - - - - - - - - - - - - - - - - -
+
+# train data file location
+# /!\ here you need to decide if you are going to train using the provided and uploaded data/train_1k.csv sample file
+# or if you want to use the full dataset (you need need to upload it first of course)
+BUCKET_TRAIN_DATA_PATH = 'data/train_1k.csv'
+
+##### Training  - - - - - - - - - - - - - - - - - - - - - -
+
+# not required here
+
+##### Model - - - - - - - - - - - - - - - - - - - - - - - -
+
+# model folder name (will contain the folders for all trained model versions)
+MODEL_NAME = 'taxifare'
+
+# model version folder name (where the trained model.joblib file will be stored)
+MODEL_VERSION = 'v1'
+
+### GCP AI Platform - - - - - - - - - - - - - - - - - - - -
+
+# not required here
+
+### - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 
-    def run(self):
-        """set and train the pipeline"""
-        self.set_pipeline()
-        self.pipeline.fit(self.X_train, self.y_train)
 
-        return self
-
-
-    def evaluate(self, X_test, y_test):
-        """evaluates the pipeline on df_test and return the RMSE"""
-        self.run()
-        y_pred = self.pipeline.predict(X_test)
-        rmse = compute_rmse(y_pred, y_test)
-        return rmse
+def get_data():
+    """method to get the training data (or a portion of it) from google cloud bucket"""
+    df = pd.read_csv(f"gs://{BUCKET_NAME}/{BUCKET_TRAIN_DATA_PATH}", nrows=1000)
+    return df
 
 
-    @memoized_property
-    def mlflow_client(self):
-        mlflow.set_tracking_uri(MLFLOW_URI)
-        return MlflowClient()
+def compute_distance(df,
+                     start_lat="pickup_latitude",
+                     start_lon="pickup_longitude",
+                     end_lat="dropoff_latitude",
+                     end_lon="dropoff_longitude"):
+    lat_1_rad, lon_1_rad = np.radians(df[start_lat].astype(float)), np.radians(df[start_lon].astype(float))
+    lat_2_rad, lon_2_rad = np.radians(df[end_lat].astype(float)), np.radians(df[end_lon].astype(float))
+    dlon = lon_2_rad - lon_1_rad
+    dlat = lat_2_rad - lat_1_rad
+
+    a = np.sin(dlat / 2.0) ** 2 + np.cos(lat_1_rad) * np.cos(lat_2_rad) * np.sin(dlon / 2.0) ** 2
+    c = 2 * np.arcsin(np.sqrt(a))
+    return 6371 * c
 
 
-    @memoized_property
-    def mlflow_experiment_id(self):
-        try:
-            return self.mlflow_client.create_experiment(self.experiment_name)
-        except BaseException:
-            return self.mlflow_client.get_experiment_by_name(self.experiment_name).experiment_id
+def preprocess(df):
+    """method that pre-process the data"""
+    df["distance"] = compute_distance(df)
+    X_train = df[["distance"]]
+    y_train = df["fare_amount"]
+    return X_train, y_train
 
 
-    @memoized_property
-    def mlflow_run(self):
-        return self.mlflow_client.create_run(self.mlflow_experiment_id)
+def train_model(X_train, y_train):
+    """method that trains the model"""
+    rgs = linear_model.Lasso(alpha=0.1)
+    rgs.fit(X_train, y_train)
+    print("trained model")
+    return rgs
 
 
-    def mlflow_log_param(self, key, value):
-        self.mlflow_client.log_param(self.mlflow_run.info.run_id, key, value)
+STORAGE_LOCATION = 'models/taxi_fare_model/model.joblib'
 
 
-    def mlflow_log_metric(self, key, value):
-        self.mlflow_client.log_metric(self.mlflow_run.info.run_id, key, value)
+def upload_model_to_gcp():
 
 
-if __name__ == "__main__":
-    # get data
-    # clean data
-    # set X and y
-    # hold out
-    # train
-    # evaluate
-    print('RMSE de ouf')
+    client = storage.Client()
+
+    bucket = client.bucket(BUCKET_NAME)
+
+    blob = bucket.blob(STORAGE_LOCATION)
+
+    blob.upload_from_filename('model.joblib')
+
+
+def save_model(reg):
+    """method that saves the model into a .joblib file and uploads it on Google Storage /models folder
+    HINTS : use joblib library and google-cloud-storage"""
+
+    # saving the trained model to disk is mandatory to then beeing able to upload it to storage
+    # Implement here
+    joblib.dump(reg, 'model.joblib')
+    print("saved model.joblib locally")
+
+    # Implement here
+    upload_model_to_gcp()
+    print(f"uploaded model.joblib to gcp cloud storage under \n => {STORAGE_LOCATION}")
+
+
+if __name__ == '__main__':
+    # get training data from GCP bucket
+    df = get_data()
+
+    # preprocess data
+    X_train, y_train = preprocess(df)
+
+    # train model (locally if this file was called through the run_locally command
+    # or on GCP if it was called through the gcp_submit_training, in which case
+    # this package is uploaded to GCP before being executed)
+    reg = train_model(X_train, y_train)
+
+    # save trained model to GCP bucket (whether the training occured locally or on GCP)
+    save_model(reg)
